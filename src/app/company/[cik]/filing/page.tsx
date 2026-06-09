@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { loadFilingHtml } from "@/lib/filing-html";
 import { getAdjacentFilings } from "@/lib/sec";
+import { getThirteenF } from "@/lib/holdings";
 import { padCik } from "@/lib/cik";
 import type { Filing } from "@/lib/types";
 import FilingReader from "@/components/FilingReader";
+import HoldingsTable from "@/components/HoldingsTable";
 
 export const revalidate = 86400;
 
@@ -34,13 +36,58 @@ export default async function FilingViewerPage({
     );
   }
 
-  let loaded;
   let adjacent;
   try {
-    [loaded, adjacent] = await Promise.all([
-      loadFilingHtml(cik, accession, doc),
-      getAdjacentFilings(cik, accession),
-    ]);
+    adjacent = await getAdjacentFilings(cik, accession);
+  } catch (err) {
+    return (
+      <ErrorCard
+        cik={cik}
+        message={err instanceof Error ? err.message : "Could not load this filing."}
+      />
+    );
+  }
+
+  const effectiveForm = form || adjacent.current?.form || "";
+
+  // 13F holdings reports: render the parsed information table instead of the
+  // bare cover page. Falls through to the normal reader for notices (13F-NT)
+  // that carry no holdings table.
+  if (effectiveForm.startsWith("13F")) {
+    const thirteenF = await getThirteenF(cik, accession).catch(() => null);
+    if (thirteenF) {
+      return (
+        <div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Link href={`/company/${cik}`} className="text-blue-600 hover:underline">
+              ← Back
+            </Link>
+            <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs font-medium text-slate-700">
+              {effectiveForm}
+            </span>
+            <span className="text-slate-500">{date || adjacent.current?.filingDate || ""}</span>
+            {adjacent.current?.indexUrl && (
+              <a
+                href={adjacent.current.indexUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto text-blue-600 hover:underline"
+              >
+                Open full filing on SEC.gov ↗
+              </a>
+            )}
+          </div>
+          <div className="mt-4">
+            <HoldingsTable data={thirteenF} />
+          </div>
+        </div>
+      );
+    }
+  }
+
+  let loaded;
+  try {
+    loaded = await loadFilingHtml(cik, accession, doc);
   } catch (err) {
     return (
       <ErrorCard
@@ -53,7 +100,7 @@ export default async function FilingViewerPage({
   const rawUrl = `/api/filing/raw?cik=${cik}&accession=${accession}&doc=${encodeURIComponent(doc)}`;
   const meta = {
     cik,
-    form: form || adjacent.current?.form || "",
+    form: effectiveForm,
     date: date || adjacent.current?.filingDate || "",
     sourceUrl: loaded.sourceUrl,
     downloadUrl: `${rawUrl}&download=1`,

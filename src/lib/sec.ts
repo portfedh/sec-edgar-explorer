@@ -50,6 +50,26 @@ async function secFetch<T>(url: string, revalidate = 3600): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** Fetch text (HTML) from an SEC endpoint with the required headers + caching. */
+async function secFetchText(url: string, revalidate = 3600): Promise<string> {
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": USER_AGENT,
+      Accept: "text/html",
+      "Accept-Encoding": "gzip, deflate",
+    },
+    next: { revalidate },
+  });
+
+  if (res.status === 404) {
+    throw new SecError("Not found", 404);
+  }
+  if (!res.ok) {
+    throw new SecError(`SEC request failed (${res.status}) for ${url}`, res.status);
+  }
+  return res.text();
+}
+
 // ---------------------------------------------------------------------------
 // Company submissions (profile + filings)
 // ---------------------------------------------------------------------------
@@ -301,4 +321,63 @@ export async function fullTextSearch(
   });
 
   return { total: data.hits.total.value, hits };
+}
+
+const HTML_ENTITIES: Record<string, string> = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'",
+};
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(?:amp|lt|gt|quot|#39);/g, (m) => HTML_ENTITIES[m] ?? m).trim();
+}
+
+/**
+ * Find institutional investment managers (13F filers) by name. These entities
+ * usually have no exchange ticker, so they are absent from company_tickers.json
+ * and unreachable via the ticker search.
+ *
+ * We use EDGAR's company-name browse endpoint filtered to form 13F-HR, which
+ * matches on the *filer's name* (not filing text) and so reliably surfaces the
+ * manager even when the name is a common word — efts full-text search buries
+ * such names (e.g. "Bridgewater") under unrelated filings that merely mention
+ * them. The endpoint's atom output corrupts names ("ARRAY(0x…)") on multi-match,
+ * so we parse the HTML, which renders names correctly.
+ */
+export async function searchManagers(
+  q: string,
+  limit = 15,
+): Promise<{ cik: string; name: string }[]> {
+  const term = q.trim();
+  if (!term) return [];
+
+  const url = new URL("https://www.sec.gov/cgi-bin/browse-edgar");
+  url.searchParams.set("action", "getcompany");
+  url.searchParams.set("company", term);
+  url.searchParams.set("type", "13F-HR");
+  url.searchParams.set("dateb", "");
+  url.searchParams.set("owner", "include");
+  url.searchParams.set("count", String(limit));
+  url.searchParams.set("output", "html");
+
+  const html = await secFetchText(url.toString(), 300);
+
+  // Multi-match: a results table of <a>CIK</a></td><td>Name</td> rows.
+  const rowRe = /CIK=(\d+)[^>]*>\s*\d+\s*<\/a><\/td>\s*<td[^>]*>([^<]*)<\/td>/g;
+  const out: { cik: string; name: string }[] = [];
+  for (let m = rowRe.exec(html); m && out.length < limit; m = rowRe.exec(html)) {
+    out.push({ cik: m[1], name: decodeEntities(m[2]) });
+  }
+  if (out.length > 0) return out;
+
+  // Single exact match: EDGAR redirects to the filer's page (no results table).
+  const nameMatch = html.match(/class="companyName">([^<]+)/);
+  const cikMatch = html.match(/CIK=(\d{10})/);
+  if (nameMatch && cikMatch) {
+    return [{ cik: cikMatch[1], name: decodeEntities(nameMatch[1]) }];
+  }
+  return [];
 }
