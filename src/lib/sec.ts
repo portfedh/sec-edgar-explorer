@@ -137,6 +137,25 @@ export async function getCompany(
   return { profile: toProfile(sub), filings };
 }
 
+/**
+ * Find the filings immediately newer (prev) and older (next) than the given
+ * accession number, for prev/next navigation in the reader. Filings are ordered
+ * newest-first, so prev = index-1 (newer) and next = index+1 (older).
+ */
+export async function getAdjacentFilings(
+  cik: string | number,
+  accession: string,
+): Promise<{ prev: Filing | null; next: Filing | null; current: Filing | null }> {
+  const { filings } = await getCompany(cik, true);
+  const i = filings.findIndex((f) => f.accessionNumber === accession);
+  if (i === -1) return { prev: null, next: null, current: null };
+  return {
+    prev: i > 0 ? filings[i - 1] : null,
+    next: i < filings.length - 1 ? filings[i + 1] : null,
+    current: filings[i],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // XBRL company facts (financials)
 // ---------------------------------------------------------------------------

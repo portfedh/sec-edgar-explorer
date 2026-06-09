@@ -1,0 +1,32 @@
+.filingContent {
+  margin: 0 auto;
+  font-family: Georgia, "Times New Roman", serif;
+  line-height: 1.55;
+  color: #1a1a1a;
+  background: #fff;
+}
+
+.filingContent :global(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+.filingContent :global(a) {
+  color: #2563eb;
+}
+
+/* Wrapper added in JS around each table so wide tables scroll instead of overflowing. */
+.tableScroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.filingContent :global(mark[data-search-match]) {
+  background: #fde68a;
+  color: inherit;
+}
+
+.filingContent :global(mark[data-search-active]) {
+  background: #f59e0b;
+  color: #000;
+}

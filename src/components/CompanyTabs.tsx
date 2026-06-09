@@ -28,7 +28,7 @@ export default function CompanyTabs({
       </div>
 
       {tab === "filings" ? (
-        <FilingsTable filings={filings} />
+        <FilingsTable cik={cik} filings={filings} />
       ) : (
         <FinancialsView cik={cik} />
       )}

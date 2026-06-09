@@ -1,12 +1,23 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import type { Filing } from "@/lib/types";
 import { fileSize } from "@/lib/format";
 
 const PAGE_SIZE = 25;
 
-export default function FilingsTable({ filings }: { filings: Filing[] }) {
+function viewerHref(cik: string, f: Filing): string {
+  const sp = new URLSearchParams({
+    accession: f.accessionNumber,
+    doc: f.primaryDocument || "",
+    form: f.form,
+    date: f.filingDate,
+  });
+  return `/company/${cik}/filing?${sp.toString()}`;
+}
+
+export default function FilingsTable({ cik, filings }: { cik: string; filings: Filing[] }) {
   const [form, setForm] = useState("ALL");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
@@ -97,14 +108,23 @@ export default function FilingsTable({ filings }: { filings: Filing[] }) {
                   {fileSize(f.size)}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right">
-                  <a
-                    href={f.documentUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-600 hover:underline"
-                  >
-                    Open
-                  </a>
+                  {f.primaryDocument ? (
+                    <Link
+                      href={viewerHref(cik, f)}
+                      className="text-blue-600 hover:underline"
+                    >
+                      Open
+                    </Link>
+                  ) : (
+                    <a
+                      href={f.indexUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      Open
+                    </a>
+                  )}
                   <span className="px-1 text-slate-300">·</span>
                   <a
                     href={f.indexUrl}
@@ -112,7 +132,7 @@ export default function FilingsTable({ filings }: { filings: Filing[] }) {
                     rel="noreferrer"
                     className="text-slate-500 hover:underline"
                   >
-                    Index
+                    Index ↗
                   </a>
                 </td>
               </tr>
