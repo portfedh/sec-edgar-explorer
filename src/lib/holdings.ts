@@ -197,3 +197,126 @@ export async function getThirteenF(
   cacheSet(cacheKey, result);
   return result;
 }
+
+// ---------------------------------------------------------------------------
+// Period-over-period comparison
+// ---------------------------------------------------------------------------
+
+export type DiffCategory = "New" | "Exited" | "Increased" | "Decreased" | "Unchanged";
+
+export interface DiffRow {
+  cusip: string;
+  issuer: string;
+  titleOfClass: string;
+  fromShares: number;
+  toShares: number;
+  deltaShares: number;
+  fromValue: number; // normalized to whole dollars
+  toValue: number; // normalized to whole dollars
+  deltaValue: number;
+  pctShares: number | null; // % change in shares; null for brand-new positions
+  category: DiffCategory;
+}
+
+export interface HoldingsDiff {
+  rows: DiffRow[];
+  summary: {
+    new: number;
+    exited: number;
+    increased: number;
+    decreased: number;
+    unchanged: number;
+    fromTotal: number;
+    toTotal: number;
+    netValue: number; // toTotal - fromTotal, whole dollars
+  };
+}
+
+interface AggPosition {
+  issuer: string;
+  titleOfClass: string;
+  shares: number;
+  value: number; // whole dollars
+}
+
+/**
+ * Aggregate a filing's rows to one net position per CUSIP (a filing can list a
+ * CUSIP across multiple managers/discretion buckets), normalizing value to whole
+ * dollars so pre-2023 ($000s) and post-2023 ($) filings compare correctly.
+ */
+function aggregateByCusip(t: ThirteenF): Map<string, AggPosition> {
+  const mult = t.valueUnit === "thousands" ? 1000 : 1;
+  const m = new Map<string, AggPosition>();
+  for (const h of t.holdings) {
+    if (!h.cusip) continue;
+    const existing = m.get(h.cusip);
+    if (existing) {
+      existing.shares += h.shares;
+      existing.value += h.value * mult;
+    } else {
+      m.set(h.cusip, {
+        issuer: h.issuer,
+        titleOfClass: h.titleOfClass,
+        shares: h.shares,
+        value: h.value * mult,
+      });
+    }
+  }
+  return m;
+}
+
+/** Compare two 13F filings (`from` = older, `to` = newer) by CUSIP. */
+export function compareHoldings(from: ThirteenF, to: ThirteenF): HoldingsDiff {
+  const a = aggregateByCusip(from);
+  const b = aggregateByCusip(to);
+  const cusips = new Set([...a.keys(), ...b.keys()]);
+
+  const rows: DiffRow[] = [];
+  const summary = {
+    new: 0,
+    exited: 0,
+    increased: 0,
+    decreased: 0,
+    unchanged: 0,
+    fromTotal: 0,
+    toTotal: 0,
+    netValue: 0,
+  };
+
+  for (const cusip of cusips) {
+    const pa = a.get(cusip);
+    const pb = b.get(cusip);
+    const fromShares = pa?.shares ?? 0;
+    const toShares = pb?.shares ?? 0;
+    const fromValue = pa?.value ?? 0;
+    const toValue = pb?.value ?? 0;
+    summary.fromTotal += fromValue;
+    summary.toTotal += toValue;
+
+    let category: DiffCategory;
+    if (!pa) category = "New";
+    else if (!pb) category = "Exited";
+    else if (toShares > fromShares) category = "Increased";
+    else if (toShares < fromShares) category = "Decreased";
+    else category = "Unchanged";
+
+    summary[category.toLowerCase() as Lowercase<DiffCategory>] += 1;
+
+    rows.push({
+      cusip,
+      issuer: (pb ?? pa)!.issuer,
+      titleOfClass: (pb ?? pa)!.titleOfClass,
+      fromShares,
+      toShares,
+      deltaShares: toShares - fromShares,
+      fromValue,
+      toValue,
+      deltaValue: toValue - fromValue,
+      pctShares: fromShares > 0 ? ((toShares - fromShares) / fromShares) * 100 : null,
+      category,
+    });
+  }
+
+  summary.netValue = summary.toTotal - summary.fromTotal;
+  return { rows, summary };
+}

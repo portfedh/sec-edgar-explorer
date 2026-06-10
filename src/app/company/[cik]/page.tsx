@@ -40,6 +40,16 @@ export default async function CompanyPage({
       </Link>
       <div className="mt-3">
         <CompanyHeader profile={data.profile} />
+        {data.filings.filter((f) => f.form === "13F-HR").length >= 2 && (
+          <div className="mt-3">
+            <Link
+              href={`/company/${data.profile.cik}/compare`}
+              className="inline-block rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-blue-600 shadow-sm hover:bg-slate-50"
+            >
+              Compare 13F holdings between periods →
+            </Link>
+          </div>
+        )}
         <CompanyTabs cik={data.profile.cik} filings={data.filings} />
       </div>
     </div>

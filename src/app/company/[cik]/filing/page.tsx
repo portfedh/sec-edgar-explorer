@@ -66,12 +66,18 @@ export default async function FilingViewerPage({
               {effectiveForm}
             </span>
             <span className="text-slate-500">{date || adjacent.current?.filingDate || ""}</span>
+            <Link
+              href={`/company/${cik}/compare?to=${accession}`}
+              className="ml-auto text-blue-600 hover:underline"
+            >
+              Compare periods ↔
+            </Link>
             {adjacent.current?.indexUrl && (
               <a
                 href={adjacent.current.indexUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="ml-auto text-blue-600 hover:underline"
+                className="text-blue-600 hover:underline"
               >
                 Open full filing on SEC.gov ↗
               </a>
