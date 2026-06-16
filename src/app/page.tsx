@@ -1,5 +1,6 @@
 import Link from "next/link";
 import SearchBar from "@/components/SearchBar";
+import { PROVIDERS, OTHER_FUND } from "@/lib/fund-providers";
 
 const POPULAR = [
   { cik: "0000320193", name: "Apple Inc.", ticker: "AAPL" },
@@ -49,6 +50,44 @@ export default function Home() {
             </Link>
           ))}
         </div>
+      </section>
+
+      <section className="mt-10">
+        <details className="rounded-lg border border-slate-200 bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold uppercase tracking-wide text-slate-500 hover:text-slate-700">
+            13F fund-provider classification ({PROVIDERS.length} providers · audit)
+          </summary>
+          <div className="border-t border-slate-200 px-4 py-3">
+            <p className="text-sm text-slate-600">
+              The Funds &amp; ETF providers view detects ETF/fund holdings by matching each
+              brand-name pattern below against the issuer name reported in a 13F. Recognized funds
+              with no matching brand are grouped as “{OTHER_FUND}”; everything else is treated as an
+              individual security.
+            </p>
+            <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Provider</th>
+                    <th className="px-3 py-2">Issuer-name patterns</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {PROVIDERS.map((p) => (
+                    <tr key={p.provider}>
+                      <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-800">
+                        {p.provider}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-slate-500">
+                        {p.patterns.map((re) => re.source).join("  ·  ")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </details>
       </section>
     </div>
   );

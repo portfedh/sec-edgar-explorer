@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import type { Holding, ThirteenF } from "@/lib/holdings";
-import { compactNumber, fullNumber } from "@/lib/format";
+import { compactNumber, fullNumber, fileSlug } from "@/lib/format";
+import { useTickers, fetchTickers } from "@/lib/tickers-client";
 
 const PAGE_SIZE = 50;
 
@@ -41,6 +42,7 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageRows = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const tickers = useTickers(pageRows.map((h) => h.cusip));
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) {
@@ -67,6 +69,7 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
       const ws = wb.addWorksheet("Holdings");
       ws.columns = [
         { header: "Issuer", key: "issuer", width: 36 },
+        { header: "Ticker", key: "ticker", width: 10 },
         { header: "Class", key: "titleOfClass", width: 16 },
         { header: "CUSIP", key: "cusip", width: 12 },
         { header: unitLabel, key: "value", width: 16, style: { numFmt: "#,##0" } },
@@ -78,7 +81,8 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
         { header: "Voting (none)", key: "none", width: 14, style: { numFmt: "#,##0" } },
       ];
       ws.getRow(1).font = { bold: true };
-      ws.addRows(filtered);
+      const allTickers = await fetchTickers(filtered.map((h) => h.cusip));
+      ws.addRows(filtered.map((h) => ({ ...h, ticker: allTickers[h.cusip] ?? "" })));
 
       const buf = await wb.xlsx.writeBuffer();
       const blob = new Blob([buf], {
@@ -87,7 +91,7 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `13F-holdings-${data.period || "report"}.xlsx`;
+      a.download = `13F-${fileSlug(data.filerName)}-holdings-${data.period || "report"}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
     } finally {
@@ -150,6 +154,7 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
               <th className="cursor-pointer px-3 py-2 hover:text-slate-700" onClick={() => toggleSort("issuer")}>
                 Issuer{arrow("issuer")}
               </th>
+              <th className="px-3 py-2">Ticker</th>
               <th className="px-3 py-2">Class</th>
               <th className="px-3 py-2">CUSIP</th>
               <th className="cursor-pointer px-3 py-2 text-right hover:text-slate-700" onClick={() => toggleSort("value")}>
@@ -166,6 +171,9 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
             {pageRows.map((h, i) => (
               <tr key={`${h.cusip}-${i}`} className="hover:bg-slate-50">
                 <td className="px-3 py-2 text-slate-800">{h.issuer}</td>
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-slate-600">
+                  {tickers[h.cusip] || ""}
+                </td>
                 <td className="whitespace-nowrap px-3 py-2 text-slate-500">{h.titleOfClass}</td>
                 <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-slate-500">
                   {h.cusip}
@@ -185,7 +193,7 @@ export default function HoldingsTable({ data }: { data: ThirteenF }) {
             ))}
             {pageRows.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-slate-400">
+                <td colSpan={8} className="px-3 py-8 text-center text-slate-400">
                   No holdings match your filter.
                 </td>
               </tr>

@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { getCompany, SecError } from "@/lib/sec";
-import { getThirteenF, compareHoldings } from "@/lib/holdings";
+import { getThirteenF, fundBreakdown, compareFundBreakdown } from "@/lib/holdings";
 import { padCik } from "@/lib/cik";
-import HoldingsDiff from "@/components/HoldingsDiff";
+import FundsBreakdown from "@/components/FundsBreakdown";
 
 export const revalidate = 86400;
 
-export default async function ComparePage({
+export default async function FundsPage({
   params,
   searchParams,
 }: {
@@ -36,22 +36,21 @@ export default async function ComparePage({
     label: f.reportDate || f.filingDate,
   }));
 
-  if (filings.length < 2) {
+  if (filings.length < 1) {
     return (
       <ErrorCard
         cik={cik}
-        message={`${company.profile.name} has ${filings.length} 13F-HR filing(s); at least two are needed to compare periods.`}
+        message={`${company.profile.name} has no 13F-HR filings with a holdings table to analyze.`}
       />
     );
   }
 
-  // Default `to` = latest; default `from` = the period immediately older than
-  // `to` (filings are newest-first), so the viewer's "Compare periods" link
-  // sensibly diffs a filing against its predecessor.
+  // Default `to` = latest. Default `from` = the period immediately older than
+  // `to`; when there's only one filing, `from` falls back to `to` (a single-period
+  // view with zero deltas).
   const toAcc = to || filings[0].accessionNumber;
   const toIdx = Math.max(0, filings.findIndex((f) => f.accessionNumber === toAcc));
-  const fromAcc =
-    from || filings[toIdx + 1]?.accessionNumber || filings[toIdx === 0 ? 1 : 0].accessionNumber;
+  const fromAcc = from || filings[toIdx + 1]?.accessionNumber || toAcc;
 
   let fromData;
   let toData;
@@ -66,36 +65,42 @@ export default async function ComparePage({
     );
   }
 
-  if (!fromData || !toData) {
+  if (!toData) {
     return (
       <ErrorCard
         cik={cik}
-        message="One of the selected filings has no holdings table to compare."
+        message="The selected filing has no holdings table to analyze."
       />
     );
   }
 
-  const diff = compareHoldings(fromData, toData);
+  // When `from` has no holdings (e.g. a 13F-NT predecessor), compare `to` against
+  // itself so the page still renders a single-period breakdown.
+  const effectiveFrom = fromData ?? toData;
+  const breakdown = fundBreakdown(toData);
+  const comparison = compareFundBreakdown(effectiveFrom, toData);
 
   return (
     <div>
       <Link href={`/company/${cik}`} className="text-sm text-blue-600 hover:underline">
         ← {company.profile.name}
       </Link>
-      <h1 className="mt-3 text-2xl font-bold text-slate-900">Compare 13F holdings</h1>
+      <h1 className="mt-3 text-2xl font-bold text-slate-900">Funds &amp; ETF providers</h1>
       <p className="mt-1 text-sm text-slate-500">
-        Position changes between two reporting periods, matched by CUSIP.
+        ETF / pooled-fund holdings grouped by provider, with each vendor&apos;s share of the
+        portfolio and how it changed between periods.
       </p>
       <div className="mt-4">
-        <HoldingsDiff
+        <FundsBreakdown
           cik={cik}
           name={company.profile.name}
           options={options}
           fromAcc={fromAcc}
           toAcc={toAcc}
-          fromPeriod={fromData.period}
+          fromPeriod={effectiveFrom.period}
           toPeriod={toData.period}
-          diff={diff}
+          comparison={comparison}
+          breakdown={breakdown}
         />
       </div>
     </div>

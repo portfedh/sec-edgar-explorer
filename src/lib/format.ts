@@ -13,6 +13,17 @@ export function fullNumber(n: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(n);
 }
 
+/** Make a string safe for a download filename: "Creative Planning L.P." -> "Creative-Planning-L-P". */
+export function fileSlug(s: string): string {
+  return (
+    (s || "")
+      .trim()
+      .replace(/[^\w]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "report"
+  );
+}
+
 /** Fiscal-year-end code "0930" -> "Sep 30". */
 export function fiscalYearEnd(code: string | undefined): string {
   if (!code || code.length !== 4) return "—";

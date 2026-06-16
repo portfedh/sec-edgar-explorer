@@ -7,6 +7,7 @@
 import "server-only";
 import { XMLParser } from "fast-xml-parser";
 import { filingFolderBase, filingDocumentUrl } from "./filing-html";
+import { classifyFund } from "./fund-providers";
 
 const USER_AGENT =
   process.env.SEC_USER_AGENT || "EDGAR Browser (set SEC_USER_AGENT) example@example.com";
@@ -27,6 +28,7 @@ export interface Holding {
 export interface ThirteenF {
   period: string; // e.g. "03-31-2026"
   reportType: string;
+  filerName: string; // institutional manager name, from the cover's filingManager
   totalValue: number;
   positionCount: number;
   valueUnit: "dollars" | "thousands";
@@ -178,6 +180,12 @@ export async function getThirteenF(
 
   const period = tag(coverXml, "periodOfReport") ?? "";
   const reportType = tag(coverXml, "reportType") ?? "13F HOLDINGS REPORT";
+  // The manager name lives in the cover's <filingManager><name>; scope the match
+  // to that block so we don't pick up the signature block's name.
+  const filerName =
+    coverXml
+      .match(/<(?:\w+:)?filingManager>[\s\S]*?<(?:\w+:)?name>([^<]*)<\/(?:\w+:)?name>/i)?.[1]
+      ?.trim() ?? "";
   const coverEntries = num(tag(coverXml, "tableEntryTotal"));
   const coverValue = num(tag(coverXml, "tableValueTotal"));
 
@@ -189,6 +197,7 @@ export async function getThirteenF(
   const result: ThirteenF = {
     period,
     reportType,
+    filerName,
     positionCount: coverEntries || holdings.length,
     totalValue: coverValue || holdings.reduce((s, h) => s + h.value, 0),
     valueUnit,
@@ -319,4 +328,149 @@ export function compareHoldings(from: ThirteenF, to: ThirteenF): HoldingsDiff {
 
   summary.netValue = summary.toTotal - summary.fromTotal;
   return { rows, summary };
+}
+
+// ---------------------------------------------------------------------------
+// ETF / fund provider breakdown
+// ---------------------------------------------------------------------------
+
+export interface FundPosition {
+  cusip: string;
+  issuer: string;
+  titleOfClass: string;
+  provider: string;
+  value: number; // whole dollars
+  pctOfPortfolio: number; // fraction of the whole 13F portfolio
+  pctOfFunds: number; // fraction of the ETF/fund sleeve
+}
+
+export interface ProviderBucket {
+  provider: string;
+  count: number; // distinct fund positions
+  value: number; // whole dollars
+  pctOfPortfolio: number; // fraction 0..1
+  pctOfFunds: number; // fraction 0..1
+}
+
+export interface FundBreakdown {
+  period: string;
+  portfolioTotal: number; // all holdings, whole dollars
+  fundTotal: number; // ETF/fund holdings only, whole dollars
+  providers: ProviderBucket[]; // sorted by value desc
+  positions: FundPosition[]; // sorted by value desc
+}
+
+/**
+ * Roll a filing's holdings up into an ETF/fund-provider breakdown. Holdings are
+ * aggregated by CUSIP and value normalized to whole dollars (reusing the same
+ * rule as `aggregateByCusip`); each fund position is attributed to a provider
+ * via `classifyFund`. Non-fund positions are excluded from the breakdown but
+ * still counted in `portfolioTotal`.
+ */
+export function fundBreakdown(t: ThirteenF): FundBreakdown {
+  const agg = aggregateByCusip(t);
+
+  let portfolioTotal = 0;
+  for (const p of agg.values()) portfolioTotal += p.value;
+
+  const positions: FundPosition[] = [];
+  const providerMap = new Map<string, ProviderBucket>();
+  let fundTotal = 0;
+
+  for (const [cusip, p] of agg) {
+    const provider = classifyFund(p.issuer, p.titleOfClass);
+    if (!provider) continue;
+    fundTotal += p.value;
+    positions.push({
+      cusip,
+      issuer: p.issuer,
+      titleOfClass: p.titleOfClass,
+      provider,
+      value: p.value,
+      pctOfPortfolio: 0, // filled in below once totals are known
+      pctOfFunds: 0,
+    });
+    const bucket = providerMap.get(provider);
+    if (bucket) {
+      bucket.count += 1;
+      bucket.value += p.value;
+    } else {
+      providerMap.set(provider, {
+        provider,
+        count: 1,
+        value: p.value,
+        pctOfPortfolio: 0,
+        pctOfFunds: 0,
+      });
+    }
+  }
+
+  for (const pos of positions) {
+    pos.pctOfPortfolio = portfolioTotal > 0 ? pos.value / portfolioTotal : 0;
+    pos.pctOfFunds = fundTotal > 0 ? pos.value / fundTotal : 0;
+  }
+  for (const b of providerMap.values()) {
+    b.pctOfPortfolio = portfolioTotal > 0 ? b.value / portfolioTotal : 0;
+    b.pctOfFunds = fundTotal > 0 ? b.value / fundTotal : 0;
+  }
+
+  positions.sort((a, b) => b.value - a.value);
+  const providers = [...providerMap.values()].sort((a, b) => b.value - a.value);
+
+  return { period: t.period, portfolioTotal, fundTotal, providers, positions };
+}
+
+export interface ProviderTrendRow {
+  provider: string;
+  fromValue: number;
+  toValue: number;
+  deltaValue: number;
+  fromPctPortfolio: number;
+  toPctPortfolio: number;
+  fromPctFunds: number;
+  toPctFunds: number;
+}
+
+export interface FundComparison {
+  rows: ProviderTrendRow[]; // sorted by toValue desc
+  fromPortfolioTotal: number;
+  toPortfolioTotal: number;
+  fromFundTotal: number;
+  toFundTotal: number;
+}
+
+/** Compare provider proportions between two filings (`from` older, `to` newer). */
+export function compareFundBreakdown(from: ThirteenF, to: ThirteenF): FundComparison {
+  const a = fundBreakdown(from);
+  const b = fundBreakdown(to);
+  const byProviderA = new Map(a.providers.map((p) => [p.provider, p]));
+  const byProviderB = new Map(b.providers.map((p) => [p.provider, p]));
+  const providers = new Set([...byProviderA.keys(), ...byProviderB.keys()]);
+
+  const rows: ProviderTrendRow[] = [];
+  for (const provider of providers) {
+    const pa = byProviderA.get(provider);
+    const pb = byProviderB.get(provider);
+    const fromValue = pa?.value ?? 0;
+    const toValue = pb?.value ?? 0;
+    rows.push({
+      provider,
+      fromValue,
+      toValue,
+      deltaValue: toValue - fromValue,
+      fromPctPortfolio: pa?.pctOfPortfolio ?? 0,
+      toPctPortfolio: pb?.pctOfPortfolio ?? 0,
+      fromPctFunds: pa?.pctOfFunds ?? 0,
+      toPctFunds: pb?.pctOfFunds ?? 0,
+    });
+  }
+  rows.sort((x, y) => y.toValue - x.toValue);
+
+  return {
+    rows,
+    fromPortfolioTotal: a.portfolioTotal,
+    toPortfolioTotal: b.portfolioTotal,
+    fromFundTotal: a.fundTotal,
+    toFundTotal: b.fundTotal,
+  };
 }

@@ -72,6 +72,12 @@ export default async function FilingViewerPage({
             >
               Compare periods ↔
             </Link>
+            <Link
+              href={`/company/${cik}/funds?to=${accession}`}
+              className="text-blue-600 hover:underline"
+            >
+              Funds &amp; ETFs
+            </Link>
             {adjacent.current?.indexUrl && (
               <a
                 href={adjacent.current.indexUrl}

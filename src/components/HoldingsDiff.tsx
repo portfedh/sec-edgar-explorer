@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { DiffCategory, HoldingsDiff as Diff } from "@/lib/holdings";
-import { compactNumber, fullNumber } from "@/lib/format";
+import { compactNumber, fullNumber, fileSlug } from "@/lib/format";
+import { useTickers, fetchTickers } from "@/lib/tickers-client";
 
 const PAGE_SIZE = 50;
 const CATEGORIES: ("All" | DiffCategory)[] = [
@@ -46,6 +47,7 @@ const BADGE: Record<DiffCategory, string> = {
 
 export default function HoldingsDiff({
   cik,
+  name,
   options,
   fromAcc,
   toAcc,
@@ -54,6 +56,7 @@ export default function HoldingsDiff({
   diff,
 }: {
   cik: string;
+  name: string;
   options: PeriodOption[];
   fromAcc: string;
   toAcc: string;
@@ -93,6 +96,7 @@ export default function HoldingsDiff({
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const pageRows = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const tickers = useTickers(pageRows.map((r) => r.cusip));
 
   function toggleSort(key: SortKey) {
     if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -114,6 +118,7 @@ export default function HoldingsDiff({
       const ws = wb.addWorksheet("Comparison");
       ws.columns = [
         { header: "Issuer", key: "issuer", width: 36 },
+        { header: "Ticker", key: "ticker", width: 10 },
         { header: "CUSIP", key: "cusip", width: 12 },
         { header: "Change", key: "category", width: 12 },
         { header: "Shares (from)", key: "fromShares", width: 14, style: { numFmt: "#,##0" } },
@@ -125,9 +130,11 @@ export default function HoldingsDiff({
         { header: "Δ Value ($)", key: "deltaValue", width: 16, style: { numFmt: "+#,##0;-#,##0" } },
       ];
       ws.getRow(1).font = { bold: true };
+      const allTickers = await fetchTickers(filtered.map((r) => r.cusip));
       ws.addRows(
         filtered.map((r) => ({
           ...r,
+          ticker: allTickers[r.cusip] ?? "",
           pctShares: r.pctShares === null ? null : r.pctShares / 100,
         })),
       );
@@ -138,7 +145,7 @@ export default function HoldingsDiff({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `13F-compare-${fromPeriod}_to_${toPeriod}.xlsx`;
+      a.download = `13F-${fileSlug(name)}-compare-${fromPeriod}_to_${toPeriod}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
     } finally {
@@ -263,8 +270,15 @@ export default function HoldingsDiff({
             {pageRows.map((r) => (
               <tr key={r.cusip} className="hover:bg-slate-50">
                 <td className="px-3 py-2 text-slate-800">
-                  {r.issuer}
-                  <span className="ml-2 font-mono text-xs text-slate-400">{r.cusip}</span>
+                  <div className="flex items-center gap-2">
+                    <span>{r.issuer}</span>
+                    {tickers[r.cusip] && (
+                      <span className="rounded bg-slate-100 px-1.5 font-mono text-xs text-slate-600">
+                        {tickers[r.cusip]}
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-mono text-xs text-slate-400">CUSIP {r.cusip}</div>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2">
                   <span className={`rounded px-2 py-0.5 text-xs font-medium ${BADGE[r.category]}`}>
