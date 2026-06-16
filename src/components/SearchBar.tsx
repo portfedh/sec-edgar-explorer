@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { TickerEntry } from "@/lib/types";
 
-type Mode = "company" | "manager";
+export type Mode = "company" | "manager";
 
 /** Unified autocomplete row for both search modes. */
 interface SearchResult {
@@ -33,9 +33,20 @@ function toResults(mode: Mode, raw: unknown): SearchResult[] {
   }));
 }
 
-export default function SearchBar({ autoFocus = false }: { autoFocus?: boolean }) {
+export default function SearchBar({
+  autoFocus = false,
+  mode: controlledMode,
+  onModeChange,
+}: {
+  autoFocus?: boolean;
+  mode?: Mode;
+  onModeChange?: (m: Mode) => void;
+}) {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>("company");
+  const [internalMode, setInternalMode] = useState<Mode>("company");
+  // Controlled when a parent passes `mode`; otherwise self-managed.
+  const mode = controlledMode ?? internalMode;
+  const setMode = onModeChange ?? setInternalMode;
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [open, setOpen] = useState(false);
