@@ -16,7 +16,7 @@ const CATEGORIES: ("All" | DiffCategory)[] = [
   "Unchanged",
 ];
 
-type SortKey = "deltaValue" | "deltaShares" | "issuer";
+type SortKey = "deltaValue" | "toValue" | "deltaShares" | "issuer";
 
 interface PeriodOption {
   accession: string;
@@ -260,7 +260,9 @@ export default function HoldingsDiff({
                 Δ Shares{arrow("deltaShares")}
               </th>
               <th className="px-3 py-2 text-right">% Δ</th>
-              <th className="px-3 py-2 text-right">Value to</th>
+              <th className="cursor-pointer px-3 py-2 text-right hover:text-slate-700" onClick={() => toggleSort("toValue")}>
+                Value to{arrow("toValue")}
+              </th>
               <th className="cursor-pointer px-3 py-2 text-right hover:text-slate-700" onClick={() => toggleSort("deltaValue")}>
                 Δ Value{arrow("deltaValue")}
               </th>
