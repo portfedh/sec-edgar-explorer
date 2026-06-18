@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getCompany, SecError } from "@/lib/sec";
 import CompanyHeader from "@/components/CompanyHeader";
 import CompanyTabs from "@/components/CompanyTabs";
+import FilingFormGuide from "@/components/FilingFormGuide";
 
 export const revalidate = 3600;
 
@@ -58,6 +59,7 @@ export default async function CompanyPage({
             </Link>
           </div>
         )}
+        <FilingFormGuide className="mt-3" />
         <CompanyTabs cik={data.profile.cik} filings={data.filings} />
       </div>
     </div>
