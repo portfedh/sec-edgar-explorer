@@ -1,6 +1,11 @@
 import Link from "next/link";
 import { getCompany, SecError } from "@/lib/sec";
-import { getThirteenF, fundBreakdown, compareFundBreakdown } from "@/lib/holdings";
+import {
+  getThirteenF,
+  fundBreakdown,
+  compareFundBreakdown,
+  compareFundPositions,
+} from "@/lib/holdings";
 import { padCik } from "@/lib/cik";
 import FundsBreakdown from "@/components/FundsBreakdown";
 
@@ -79,6 +84,7 @@ export default async function FundsPage({
   const effectiveFrom = fromData ?? toData;
   const breakdown = fundBreakdown(toData);
   const comparison = compareFundBreakdown(effectiveFrom, toData);
+  const positionDiff = compareFundPositions(effectiveFrom, toData);
 
   return (
     <div>
@@ -101,6 +107,7 @@ export default async function FundsPage({
           toPeriod={toData.period}
           comparison={comparison}
           breakdown={breakdown}
+          positionDiff={positionDiff}
         />
       </div>
     </div>

@@ -24,6 +24,12 @@ export function fileSlug(s: string): string {
   );
 }
 
+/** 13F period "MM-DD-YYYY" -> ISO "YYYY-MM-DD" (returns input unchanged if it doesn't match). */
+export function isoPeriod(period: string): string {
+  const m = (period || "").match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  return m ? `${m[3]}-${m[1]}-${m[2]}` : period || "";
+}
+
 /** Fiscal-year-end code "0930" -> "Sep 30". */
 export function fiscalYearEnd(code: string | undefined): string {
   if (!code || code.length !== 4) return "—";

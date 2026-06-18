@@ -474,3 +474,92 @@ export function compareFundBreakdown(from: ThirteenF, to: ThirteenF): FundCompar
     toFundTotal: b.fundTotal,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Period-over-period comparison, restricted to ETF/fund positions
+// ---------------------------------------------------------------------------
+
+export interface FundPositionDiffRow {
+  cusip: string;
+  issuer: string;
+  titleOfClass: string;
+  provider: string; // from classifyFund
+  fromValue: number; // whole dollars
+  toValue: number; // whole dollars (== aum for the screen)
+  deltaValue: number; // toValue - fromValue (== nnb / "Change")
+  fromShares: number;
+  toShares: number;
+  deltaShares: number;
+  toPctOfPortfolio: number; // of the `to` filing's whole portfolio
+  toPctOfFunds: number; // of the `to` filing's fund sleeve
+  category: DiffCategory;
+}
+
+export interface FundPositionDiff {
+  rows: FundPositionDiffRow[]; // sorted by toValue desc
+  toPeriod: string;
+  fromPeriod: string;
+  toPortfolioTotal: number;
+  toFundTotal: number;
+}
+
+/**
+ * Compare two filings (`from` older, `to` newer) at the individual ETF/fund
+ * position level, by CUSIP. Mirrors `compareHoldings` but keeps only positions
+ * that `classifyFund` recognizes in either period, attributes each to a provider,
+ * and expresses the `to`-period value as a share of the `to` portfolio/fund sleeve.
+ */
+export function compareFundPositions(from: ThirteenF, to: ThirteenF): FundPositionDiff {
+  const a = aggregateByCusip(from);
+  const b = aggregateByCusip(to);
+
+  // `to`-period totals for the percentage columns (whole portfolio + fund sleeve).
+  let toPortfolioTotal = 0;
+  let toFundTotal = 0;
+  for (const p of b.values()) {
+    toPortfolioTotal += p.value;
+    if (classifyFund(p.issuer, p.titleOfClass)) toFundTotal += p.value;
+  }
+
+  const cusips = new Set([...a.keys(), ...b.keys()]);
+  const rows: FundPositionDiffRow[] = [];
+
+  for (const cusip of cusips) {
+    const pa = a.get(cusip);
+    const pb = b.get(cusip);
+    const ref = (pb ?? pa)!;
+    const provider = classifyFund(ref.issuer, ref.titleOfClass);
+    if (!provider) continue; // not an ETF/fund position in either period
+
+    const fromShares = pa?.shares ?? 0;
+    const toShares = pb?.shares ?? 0;
+    const fromValue = pa?.value ?? 0;
+    const toValue = pb?.value ?? 0;
+
+    let category: DiffCategory;
+    if (!pa) category = "New";
+    else if (!pb) category = "Exited";
+    else if (toShares > fromShares) category = "Increased";
+    else if (toShares < fromShares) category = "Decreased";
+    else category = "Unchanged";
+
+    rows.push({
+      cusip,
+      issuer: ref.issuer,
+      titleOfClass: ref.titleOfClass,
+      provider,
+      fromValue,
+      toValue,
+      deltaValue: toValue - fromValue,
+      fromShares,
+      toShares,
+      deltaShares: toShares - fromShares,
+      toPctOfPortfolio: toPortfolioTotal > 0 ? toValue / toPortfolioTotal : 0,
+      toPctOfFunds: toFundTotal > 0 ? toValue / toFundTotal : 0,
+      category,
+    });
+  }
+
+  rows.sort((x, y) => y.toValue - x.toValue);
+  return { rows, toPeriod: to.period, fromPeriod: from.period, toPortfolioTotal, toFundTotal };
+}

@@ -2,14 +2,28 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { FundBreakdown, FundComparison } from "@/lib/holdings";
+import type {
+  FundBreakdown,
+  FundComparison,
+  FundPositionDiff,
+  DiffCategory,
+} from "@/lib/holdings";
 import { compactNumber, fullNumber, fileSlug } from "@/lib/format";
 import { useTickers, fetchTickers } from "@/lib/tickers-client";
 
 const PAGE_SIZE = 50;
 
+const CATEGORIES: ("All" | DiffCategory)[] = [
+  "All",
+  "New",
+  "Exited",
+  "Increased",
+  "Decreased",
+  "Unchanged",
+];
+
 type ProviderSortKey = "toValue" | "deltaValue" | "provider";
-type PositionSortKey = "value" | "provider" | "issuer";
+type PositionSortKey = "value" | "deltaValue" | "provider" | "issuer";
 
 interface PeriodOption {
   accession: string;
@@ -40,6 +54,7 @@ export default function FundsBreakdown({
   toPeriod,
   comparison,
   breakdown,
+  positionDiff,
 }: {
   cik: string;
   name: string;
@@ -50,6 +65,7 @@ export default function FundsBreakdown({
   toPeriod: string;
   comparison: FundComparison;
   breakdown: FundBreakdown; // the `to` period
+  positionDiff: FundPositionDiff; // per-position from→to diff
 }) {
   const router = useRouter();
   const samePeriod = fromAcc === toAcc;
@@ -58,6 +74,7 @@ export default function FundsBreakdown({
   const [provDir, setProvDir] = useState<"asc" | "desc">("desc");
 
   const [providerFilter, setProviderFilter] = useState<string>("All");
+  const [categoryFilter, setCategoryFilter] = useState<"All" | DiffCategory>("All");
   const [query, setQuery] = useState("");
   const [posSort, setPosSort] = useState<PositionSortKey>("value");
   const [posDir, setPosDir] = useState<"asc" | "desc">("desc");
@@ -78,26 +95,28 @@ export default function FundsBreakdown({
     });
   }, [comparison.rows, provSort, provDir]);
 
-  const providerNames = useMemo(
-    () => ["All", ...breakdown.providers.map((p) => p.provider)],
-    [breakdown.providers],
-  );
+  const providerNames = useMemo(() => {
+    const names = new Set(positionDiff.rows.map((r) => r.provider));
+    return ["All", ...[...names].sort((a, b) => a.localeCompare(b))];
+  }, [positionDiff.rows]);
 
   const filteredPositions = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const rows = breakdown.positions.filter((p) => {
+    const rows = positionDiff.rows.filter((p) => {
       if (providerFilter !== "All" && p.provider !== providerFilter) return false;
+      if (categoryFilter !== "All" && p.category !== categoryFilter) return false;
       if (q && !p.issuer.toLowerCase().includes(q) && !p.cusip.toLowerCase().includes(q))
         return false;
       return true;
     });
     const sign = posDir === "asc" ? 1 : -1;
-    return rows.sort((a, b) => {
+    return [...rows].sort((a, b) => {
       if (posSort === "issuer") return sign * a.issuer.localeCompare(b.issuer);
       if (posSort === "provider") return sign * a.provider.localeCompare(b.provider);
-      return sign * (a.value - b.value);
+      if (posSort === "deltaValue") return sign * (a.deltaValue - b.deltaValue);
+      return sign * (a.toValue - b.toValue);
     });
-  }, [breakdown.positions, providerFilter, query, posSort, posDir]);
+  }, [positionDiff.rows, providerFilter, categoryFilter, query, posSort, posDir]);
 
   const pageCount = Math.max(1, Math.ceil(filteredPositions.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
@@ -115,7 +134,7 @@ export default function FundsBreakdown({
     if (key === posSort) setPosDir((d) => (d === "asc" ? "desc" : "asc"));
     else {
       setPosSort(key);
-      setPosDir(key === "value" ? "desc" : "asc");
+      setPosDir(key === "value" || key === "deltaValue" ? "desc" : "asc");
     }
     setPage(0);
   }
@@ -153,9 +172,16 @@ export default function FundsBreakdown({
         { header: "Ticker", key: "ticker", width: 10 },
         { header: "Class", key: "titleOfClass", width: 16 },
         { header: "CUSIP", key: "cusip", width: 12 },
-        { header: "Value ($)", key: "value", width: 18, style: { numFmt: "#,##0" } },
-        { header: "% portfolio", key: "pctOfPortfolio", width: 14, style: { numFmt: "0.0%" } },
-        { header: "% funds", key: "pctOfFunds", width: 14, style: { numFmt: "0.0%" } },
+        ...(!samePeriod
+          ? [
+              { header: `Value ${fromPeriod} ($)`, key: "fromValue", width: 20, style: { numFmt: "#,##0" } },
+              { header: `Value ${toPeriod} ($)`, key: "toValue", width: 20, style: { numFmt: "#,##0" } },
+              { header: "Δ Value ($)", key: "deltaValue", width: 18, style: { numFmt: "+#,##0;-#,##0" } },
+              { header: "Status", key: "category", width: 12 },
+            ]
+          : [{ header: "Value ($)", key: "toValue", width: 18, style: { numFmt: "#,##0" } }]),
+        { header: "% portfolio", key: "toPctOfPortfolio", width: 14, style: { numFmt: "0.0%" } },
+        { header: "% funds", key: "toPctOfFunds", width: 14, style: { numFmt: "0.0%" } },
       ];
       pos.getRow(1).font = { bold: true };
       // Resolve tickers for the whole filtered set so the sheet is complete.
@@ -302,7 +328,9 @@ export default function FundsBreakdown({
       </div>
 
       {/* Fund positions table */}
-      <h2 className="mt-6 text-lg font-semibold text-slate-900">Fund positions ({toPeriod})</h2>
+      <h2 className="mt-6 text-lg font-semibold text-slate-900">
+        Fund positions{!samePeriod ? `: ${fromPeriod} → ${toPeriod}` : ` (${toPeriod})`}
+      </h2>
       <div className="mt-2 mb-3 flex flex-wrap items-center gap-3">
         <select
           value={providerFilter}
@@ -318,6 +346,22 @@ export default function FundsBreakdown({
             </option>
           ))}
         </select>
+        {!samePeriod && (
+          <select
+            value={categoryFilter}
+            onChange={(e) => {
+              setCategoryFilter(e.target.value as "All" | DiffCategory);
+              setPage(0);
+            }}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none focus:border-blue-500"
+          >
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c === "All" ? "All changes" : c}
+              </option>
+            ))}
+          </select>
+        )}
         <input
           type="text"
           value={query}
@@ -343,6 +387,12 @@ export default function FundsBreakdown({
               <th className="cursor-pointer px-3 py-2 text-right hover:text-slate-700" onClick={() => togglePosSort("value")}>
                 Value{posArrow("value")}
               </th>
+              {!samePeriod && (
+                <th className="cursor-pointer px-3 py-2 text-right hover:text-slate-700" onClick={() => togglePosSort("deltaValue")}>
+                  Δ Value{posArrow("deltaValue")}
+                </th>
+              )}
+              {!samePeriod && <th className="px-3 py-2">Status</th>}
               <th className="px-3 py-2 text-right">% portfolio</th>
               <th className="px-3 py-2 text-right">% of funds</th>
             </tr>
@@ -363,19 +413,33 @@ export default function FundsBreakdown({
                   <div className="font-mono text-xs text-slate-400">CUSIP {p.cusip}</div>
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-700">
-                  {money(p.value)}
+                  {money(p.toValue)}
+                </td>
+                {!samePeriod && (
+                  <td
+                    className={`whitespace-nowrap px-3 py-2 text-right tabular-nums ${
+                      p.deltaValue > 0 ? "text-green-700" : p.deltaValue < 0 ? "text-red-700" : "text-slate-500"
+                    }`}
+                  >
+                    {signedMoney(p.deltaValue)}
+                  </td>
+                )}
+                {!samePeriod && (
+                  <td className="whitespace-nowrap px-3 py-2">
+                    <CategoryBadge category={p.category} />
+                  </td>
+                )}
+                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-500">
+                  {pct(p.toPctOfPortfolio)}
                 </td>
                 <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-500">
-                  {pct(p.pctOfPortfolio)}
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums text-slate-500">
-                  {pct(p.pctOfFunds)}
+                  {pct(p.toPctOfFunds)}
                 </td>
               </tr>
             ))}
             {pageRows.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-3 py-8 text-center text-slate-400">
+                <td colSpan={samePeriod ? 5 : 7} className="px-3 py-8 text-center text-slate-400">
                   No fund positions match these filters.
                 </td>
               </tr>
@@ -406,6 +470,21 @@ export default function FundsBreakdown({
         </div>
       )}
     </div>
+  );
+}
+
+function CategoryBadge({ category }: { category: DiffCategory }) {
+  const tone: Record<DiffCategory, string> = {
+    New: "bg-green-100 text-green-800",
+    Exited: "bg-red-100 text-red-800",
+    Increased: "bg-emerald-50 text-emerald-700",
+    Decreased: "bg-amber-50 text-amber-700",
+    Unchanged: "bg-slate-100 text-slate-500",
+  };
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${tone[category]}`}>
+      {category}
+    </span>
   );
 }
 

@@ -36,6 +36,14 @@ export default function HomeSearch() {
           <Link href="/search" className="text-blue-600 underline">
             search the full text of all filings
           </Link>
+          {isManager && (
+            <>
+              {" · "}
+              <Link href="/screen" className="text-blue-600 underline">
+                batch-screen a list of managers
+              </Link>
+            </>
+          )}
         </p>
       </section>
 
