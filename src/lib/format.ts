@@ -30,6 +30,43 @@ export function isoPeriod(period: string): string {
   return m ? `${m[3]}-${m[1]}-${m[2]}` : period || "";
 }
 
+// --- 13F prior-period comparison ------------------------------------------
+
+/** Which prior period a 13F filing is compared against on the screening page. */
+export type CompareMode = "quarter" | "year" | "ytd";
+
+export const COMPARE_LABEL: Record<CompareMode, string> = {
+  quarter: "Last quarter",
+  year: "Last year",
+  ytd: "Year to date",
+};
+
+// 13F periods are always calendar quarter-ends; map a quarter month to its day.
+const QUARTER_END_DAY: Record<number, number> = { 3: 31, 6: 30, 9: 30, 12: 31 };
+
+/**
+ * Given the latest filing's quarter-end ISO date ("YYYY-MM-DD"), return the ISO
+ * date of the baseline period to compare against for the chosen mode. Assumes the
+ * input is a standard quarter-end (month ∈ {3,6,9,12}); returns "" on bad input.
+ */
+export function baselinePeriod(toIso: string, mode: CompareMode): string {
+  const m = (toIso || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return "";
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  if (!QUARTER_END_DAY[month]) return "";
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  if (mode === "ytd") return `${year - 1}-12-31`;
+  if (mode === "year") return `${year - 1}-${pad(month)}-${pad(QUARTER_END_DAY[month])}`;
+
+  // quarter: previous quarter-end (03-31 wraps to the prior year's 12-31).
+  const pm = month === 3 ? 12 : month - 3;
+  const py = month === 3 ? year - 1 : year;
+  return `${py}-${pad(pm)}-${pad(QUARTER_END_DAY[pm])}`;
+}
+
 /** Fiscal-year-end code "0930" -> "Sep 30". */
 export function fiscalYearEnd(code: string | undefined): string {
   if (!code || code.length !== 4) return "—";

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { compactNumber, fullNumber } from "@/lib/format";
+import { compactNumber, fullNumber, COMPARE_LABEL, type CompareMode } from "@/lib/format";
 
 // Mirrors the /api/screen/manager response (kept local so this client module
 // never imports the server-only route).
@@ -26,12 +26,17 @@ interface ScreenResult {
   matchedName?: string;
   cik?: string;
   asof?: string;
+  fromPeriod?: string;
+  mode?: CompareMode;
+  note?: string;
   rows?: ScreenRow[];
   message?: string;
   suggestions?: ScreenSuggestion[];
 }
 
-const CONCURRENCY = 3; // conservative vs SEC fair-access (each manager fans out to several SEC calls)
+const COMPARE_MODES: CompareMode[] = ["quarter", "year", "ytd"];
+
+const CONCURRENCY = 2; // conservative vs SEC fair-access (each manager fans out to several SEC calls)
 const STORAGE_KEY = "funds-screening-v1";
 
 // First-row values treated as a header and skipped (case-insensitive).
@@ -83,11 +88,13 @@ function parseNames(text: string): string[] {
 interface Checkpoint {
   names: string[];
   results: ScreenResult[];
+  mode?: CompareMode;
 }
 
 export default function ScreenPage() {
   const [names, setNames] = useState<string[]>([]);
   const [fileName, setFileName] = useState("");
+  const [mode, setMode] = useState<CompareMode>("quarter");
   const [running, setRunning] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [storageOk, setStorageOk] = useState(true);
@@ -117,6 +124,7 @@ export default function ScreenPage() {
         .flatMap((r) =>
           r.rows!.map((row) => ({
             Theasof_dt: r.asof ?? "",
+            compared_to: r.fromPeriod ?? "",
             master_firm: r.matchedName ?? r.query,
             product_ticker: row.ticker,
             aum: row.aum,
@@ -125,6 +133,7 @@ export default function ScreenPage() {
             issuer: row.issuer,
             cusip: row.cusip,
             category: row.category,
+            note: r.note ?? "",
           })),
         ),
     [results],
@@ -135,14 +144,14 @@ export default function ScreenPage() {
     if (!storageOk || names.length === 0) return;
     const id = setTimeout(() => {
       try {
-        const cp: Checkpoint = { names, results };
+        const cp: Checkpoint = { names, results, mode };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(cp));
       } catch {
         setStorageOk(false); // quota exceeded — keep running, just stop persisting
       }
     }, 1500);
     return () => clearTimeout(id);
-  }, [names, results, storageOk]);
+  }, [names, results, mode, storageOk]);
 
   // Restore a prior run on mount (post-hydration to avoid SSR mismatch).
   useEffect(() => {
@@ -154,6 +163,7 @@ export default function ScreenPage() {
         // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time post-hydration restore from localStorage
         setNames(cp.names);
         setResultMap(new Map(cp.results.map((r) => [r.query, r])));
+        if (cp.mode) setMode(cp.mode);
         setFileName("(restored from last session)");
       }
     } catch {
@@ -191,7 +201,7 @@ export default function ScreenPage() {
           const res = await fetch("/api/screen/manager", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name }),
+            body: JSON.stringify({ name, mode }),
           });
           data = (await res.json()) as ScreenResult;
         } catch (err) {
@@ -206,7 +216,7 @@ export default function ScreenPage() {
     };
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
     setRunning(false);
-  }, []);
+  }, [mode]);
 
   function start() {
     const pending = names.filter((n) => !resultMap.has(n));
@@ -222,6 +232,15 @@ export default function ScreenPage() {
 
   function stop() {
     abortRef.current = true;
+  }
+
+  // Switching the comparison period invalidates any already-computed results
+  // (their Change column is relative to a different baseline), so clear them.
+  function changeMode(next: CompareMode) {
+    if (next === mode) return;
+    abortRef.current = true;
+    setMode(next);
+    setResultMap(new Map());
   }
 
   function reset() {
@@ -246,14 +265,21 @@ export default function ScreenPage() {
       const sheet = wb.addWorksheet("Screening");
       sheet.columns = [
         { header: "report_date", key: "Theasof_dt", width: 14 },
+        { header: "compared_to", key: "compared_to", width: 14 },
         { header: "investment_manager", key: "master_firm", width: 40 },
         { header: "product_ticker", key: "product_ticker", width: 14 },
         { header: "value_usd", key: "aum", width: 18, style: { numFmt: "#,##0" } },
-        { header: "change_usd", key: "nnb", width: 26, style: { numFmt: "+#,##0;-#,##0" } },
+        {
+          header: `change_usd (vs ${COMPARE_LABEL[mode].toLowerCase()})`,
+          key: "nnb",
+          width: 26,
+          style: { numFmt: "+#,##0;-#,##0" },
+        },
         { header: "provider", key: "provider", width: 24 },
         { header: "issuer", key: "issuer", width: 40 },
         { header: "cusip", key: "cusip", width: 12 },
         { header: "status", key: "category", width: 12 },
+        { header: "note", key: "note", width: 50 },
       ];
       sheet.getRow(1).font = { bold: true };
       sheet.addRows(exportRows);
@@ -291,7 +317,8 @@ export default function ScreenPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `funds-screening-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const modeSlug = COMPARE_LABEL[mode].toLowerCase().replace(/\s+/g, "-");
+      a.download = `funds-screening-${modeSlug}-${new Date().toISOString().slice(0, 10)}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
     } finally {
@@ -329,8 +356,8 @@ export default function ScreenPage() {
                 ) is detected and skipped.
               </Step>
               <Step n={2} title="Screen">
-                Each manager&apos;s latest 13F is scanned for ETF / fund holdings and compared with
-                the prior period.
+                Each manager&apos;s latest 13F is scanned for ETF / fund holdings and compared
+                against the period you choose under <span className="font-medium">Compare to</span>.
               </Step>
               <Step n={3} title="Export">
                 Download an Excel sheet, one row per manager × product.
@@ -338,14 +365,35 @@ export default function ScreenPage() {
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Comparison period
+              </div>
+              <p>
+                13F-HR holdings are filed each calendar quarter. The latest filing is the{" "}
+                <span className="font-medium">to</span> period; the baseline it&apos;s compared
+                against depends on <span className="font-medium">Compare to</span>:
+              </p>
+              <dl className="mt-1 grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-1">
+                <Col name="Last quarter" desc="the immediately preceding quarter-end filing" />
+                <Col name="Last year" desc="the same quarter one year earlier" />
+                <Col name="Year to date" desc="the prior year-end (Dec 31) filing — change since the start of this year" />
+              </dl>
+              <p className="mt-1 text-xs text-slate-400">
+                If a manager didn&apos;t file for the exact baseline quarter, the nearest earlier
+                filing is used instead and the row carries a note explaining what was compared.
+                Managers with only one 13F on file show no change.
+              </p>
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
                 Columns
               </div>
               <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
-                <Col name="report_date" desc="filing period (as-of date)" />
+                <Col name="report_date" desc="latest filing period (as-of date)" />
+                <Col name="compared_to" desc="baseline period the change is measured against" />
                 <Col name="investment_manager" desc="matched EDGAR filer name" />
                 <Col name="product_ticker" desc="ETF / fund ticker" />
                 <Col name="value_usd" desc="position value, USD" />
-                <Col name="change_usd" desc="change vs prior period, USD" />
+                <Col name="change_usd" desc={`change vs ${COMPARE_LABEL[mode].toLowerCase()}, USD`} />
                 <Col name="status" desc="new / increased / decreased / …" />
               </dl>
             </div>
@@ -393,6 +441,21 @@ export default function ScreenPage() {
             {fileName} · {fullNumber(total)} managers
           </span>
         )}
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <span>Compare to</span>
+          <select
+            value={mode}
+            onChange={(e) => changeMode(e.target.value as CompareMode)}
+            disabled={running}
+            className="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-sm font-medium text-slate-700 shadow-sm disabled:opacity-40"
+          >
+            {COMPARE_MODES.map((m) => (
+              <option key={m} value={m}>
+                {COMPARE_LABEL[m]}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="ml-auto flex flex-wrap gap-2">
           {!running ? (
             <button
@@ -483,6 +546,7 @@ export default function ScreenPage() {
                   <th className="px-3 py-2">Manager</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">As of</th>
+                  <th className="px-3 py-2">vs</th>
                   <th className="px-3 py-2 text-right">Funds</th>
                   <th className="px-3 py-2 text-right">Total aum</th>
                 </tr>
@@ -520,6 +584,9 @@ export default function ScreenPage() {
                         {r.status === "notfound" && (r.suggestions?.length ?? 0) === 0 && (
                           <div className="mt-1 text-xs text-slate-400">No close matches found.</div>
                         )}
+                        {r.note && (
+                          <div className="mt-1 text-xs text-amber-700">{r.note}</div>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <span
@@ -535,6 +602,7 @@ export default function ScreenPage() {
                         </span>
                       </td>
                       <td className="px-3 py-2 tabular-nums text-slate-500">{r.asof ?? "—"}</td>
+                      <td className="px-3 py-2 tabular-nums text-slate-500">{r.fromPeriod ?? "—"}</td>
                       <td className="px-3 py-2 text-right tabular-nums text-slate-600">
                         {r.rows ? fullNumber(r.rows.length) : "—"}
                       </td>

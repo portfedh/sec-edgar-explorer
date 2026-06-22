@@ -24,10 +24,22 @@ export class SecError extends Error {
   constructor(
     message: string,
     public status: number,
+    /** Milliseconds to wait before retrying, from a 429 `Retry-After` header. */
+    public retryAfterMs?: number,
   ) {
     super(message);
     this.name = "SecError";
   }
+}
+
+/** Parse a `Retry-After` header (seconds or HTTP-date) into milliseconds. */
+function parseRetryAfter(res: Response): number | undefined {
+  const h = res.headers.get("retry-after");
+  if (!h) return undefined;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 }
 
 /** Fetch JSON from an SEC endpoint with the required headers + caching. */
@@ -45,7 +57,7 @@ async function secFetch<T>(url: string, revalidate = 3600): Promise<T> {
     throw new SecError("Not found", 404);
   }
   if (!res.ok) {
-    throw new SecError(`SEC request failed (${res.status}) for ${url}`, res.status);
+    throw new SecError(`SEC request failed (${res.status}) for ${url}`, res.status, parseRetryAfter(res));
   }
   return (await res.json()) as T;
 }
@@ -65,7 +77,7 @@ async function secFetchText(url: string, revalidate = 3600): Promise<string> {
     throw new SecError("Not found", 404);
   }
   if (!res.ok) {
-    throw new SecError(`SEC request failed (${res.status}) for ${url}`, res.status);
+    throw new SecError(`SEC request failed (${res.status}) for ${url}`, res.status, parseRetryAfter(res));
   }
   return res.text();
 }

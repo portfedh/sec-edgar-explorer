@@ -2,16 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { searchManagers, getCompany, SecError } from "@/lib/sec";
 import { getThirteenF, compareFundPositions } from "@/lib/holdings";
 import { resolveTickers } from "@/lib/cusip-tickers";
-import { isoPeriod } from "@/lib/format";
+import { isoPeriod, baselinePeriod, COMPARE_LABEL, type CompareMode } from "@/lib/format";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A SEC rate-limit (429) — distinct from transient 5xx because the throttle
+ *  outlasts a normal short backoff. `holdings.ts` throws a plain Error whose
+ *  message embeds the status, so match that too. */
+function is429(err: unknown): boolean {
+  if (err instanceof SecError) return err.status === 429;
+  return err instanceof Error && /\(429\)/.test(err.message);
+}
 
 /**
  * Retry a SEC-bound call through transient failures. EDGAR's browse-edgar HTML
  * endpoint (used by searchManagers) intermittently 503s under load; a genuine
- * 404 (entity doesn't exist) is not retried.
+ * 404 (entity doesn't exist) is not retried. A 429 (rate limit) gets a much
+ * longer backoff — honoring a `Retry-After` header when SEC sends one — since
+ * the throttle persists well beyond the normal sub-second retry window.
  */
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3, baseMs = 500): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 4, baseMs = 500): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -19,7 +29,11 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3, baseMs = 500): P
     } catch (err) {
       lastErr = err;
       if (err instanceof SecError && err.status === 404) throw err;
-      if (i < attempts - 1) await sleep(baseMs * 2 ** i + Math.random() * 250);
+      if (i >= attempts - 1) break;
+      const delay = is429(err)
+        ? (err instanceof SecError && err.retryAfterMs) || Math.min(3000 * 2 ** i, 20000)
+        : baseMs * 2 ** i;
+      await sleep(delay + Math.random() * 250);
     }
   }
   throw lastErr;
@@ -52,7 +66,10 @@ export interface ScreenResult {
   query: string;
   matchedName?: string;
   cik?: string;
-  asof?: string; // YYYY-MM-DD
+  asof?: string; // YYYY-MM-DD — the "to" (latest) period
+  fromPeriod?: string; // YYYY-MM-DD — the baseline period actually compared against
+  mode?: CompareMode; // which prior period was requested
+  note?: string; // explains a fallback/single-filing comparison (not an error)
   rows?: ScreenRow[];
   message?: string;
   suggestions?: ScreenSuggestion[]; // candidate registered names when notfound
@@ -90,13 +107,24 @@ async function suggestNames(query: string): Promise<ScreenSuggestion[]> {
   return out;
 }
 
+const VALID_MODES: ReadonlySet<CompareMode> = new Set(["quarter", "year", "ytd"]);
+
+/** Whole-day distance between two ISO dates, for picking a nearest fallback baseline. */
+function daysBetween(aIso: string, bIso: string): number {
+  return Math.abs((Date.parse(aIso) - Date.parse(bIso)) / 86_400_000);
+}
+
 export async function POST(req: NextRequest) {
   let query = "";
+  let mode: CompareMode = "quarter";
   try {
-    const body = (await req.json()) as { name?: unknown };
+    const body = (await req.json()) as { name?: unknown; mode?: unknown };
     query = typeof body.name === "string" ? body.name.trim() : "";
+    if (typeof body.mode === "string" && VALID_MODES.has(body.mode as CompareMode)) {
+      mode = body.mode as CompareMode;
+    }
     if (!query) {
-      return NextResponse.json<ScreenResult>({ status: "error", query, message: "Empty name" });
+      return NextResponse.json<ScreenResult>({ status: "error", query, mode, message: "Empty name" });
     }
 
     // 1. Resolve name -> CIK. Prefer an exact (case-insensitive) name match.
@@ -107,34 +135,56 @@ export async function POST(req: NextRequest) {
     const matches = await withRetry(() => searchManagers(query, 5));
     if (matches.length === 0) {
       const suggestions = await suggestNames(query);
-      return NextResponse.json<ScreenResult>({ status: "notfound", query, suggestions });
+      return NextResponse.json<ScreenResult>({ status: "notfound", query, mode, suggestions });
     }
     const norm = query.toLowerCase();
     const best = matches.find((m) => m.name.toLowerCase() === norm) ?? matches[0];
 
-    // 2. Pull all 13F-HR holdings filings (newest first).
+    // 2. Pull all 13F-HR holdings filings, newest first by report (period) date.
     const { filings } = await withRetry(() => getCompany(best.cik, true));
-    const thirteenF = filings.filter((f) => f.form === "13F-HR");
+    const thirteenF = filings
+      .filter((f) => f.form === "13F-HR")
+      .sort((a, b) => (a.reportDate < b.reportDate ? 1 : -1));
     if (thirteenF.length === 0) {
       return NextResponse.json<ScreenResult>({
         status: "no13f",
         query,
+        mode,
         matchedName: best.name,
         cik: best.cik,
       });
     }
 
-    // 3. Latest two periods (prev falls back to latest when only one exists).
-    const toAcc = thirteenF[0].accessionNumber;
-    const fromAcc = thirteenF[1]?.accessionNumber ?? toAcc;
+    // 3. Pick the baseline filing for the requested comparison period.
+    //    `to` is the latest filing; `target` is the ideal baseline quarter-end.
+    //    Prefer an exact period match; otherwise fall back to the nearest older
+    //    filing and record a note explaining what was actually compared.
+    const to = thirteenF[0];
+    const older = thirteenF.slice(1);
+    const target = baselinePeriod(to.reportDate, mode);
+    let from = older.find((f) => f.reportDate === target);
+    let note: string | undefined;
+    if (!from && older.length) {
+      from = older.reduce((best, f) =>
+        daysBetween(f.reportDate, target) < daysBetween(best.reportDate, target) ? f : best,
+      );
+      note =
+        `${COMPARE_LABEL[mode]} baseline (${target}) not on file; ` +
+        `compared against ${from.reportDate} instead.`;
+    } else if (!from) {
+      note = "Only one 13F-HR on file; no prior period to compare.";
+    }
+
+    const fromAcc = from?.accessionNumber ?? to.accessionNumber;
     const [fromData, toData] = await Promise.all([
       withRetry(() => getThirteenF(best.cik, fromAcc)),
-      withRetry(() => getThirteenF(best.cik, toAcc)),
+      withRetry(() => getThirteenF(best.cik, to.accessionNumber)),
     ]);
     if (!toData) {
       return NextResponse.json<ScreenResult>({
         status: "no-funds",
         query,
+        mode,
         matchedName: best.name,
         cik: best.cik,
       });
@@ -147,6 +197,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json<ScreenResult>({
         status: "no-funds",
         query,
+        mode,
         matchedName: best.name,
         cik: best.cik,
       });
@@ -168,13 +219,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json<ScreenResult>({
       status: "ok",
       query,
+      mode,
       matchedName: best.name,
       cik: best.cik,
       asof: isoPeriod(toData.period),
+      fromPeriod: fromData ? isoPeriod(fromData.period) : undefined,
+      note,
       rows,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Screening failed";
-    return NextResponse.json<ScreenResult>({ status: "error", query, message });
+    return NextResponse.json<ScreenResult>({ status: "error", query, mode, message });
   }
 }
